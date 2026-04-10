@@ -3,6 +3,7 @@ import { asyncHandler, ApiResponse, ApiError } from "../utils/index.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import config from "../config/index.js";
+import Session from "../models/session.model.js";
 
 const registerUser = asyncHandler(async (req, res) => {
   const { username, email, password } = req.body;
@@ -23,14 +24,40 @@ const registerUser = asyncHandler(async (req, res) => {
   const user = await User.create({ username, email, password: hashPassword });
   user.password = undefined;
 
-  const token = jwt.sign({ id: user._id }, config.JWT_SECRET, {
-    expiresIn: "1d",
+  const refreshToken = jwt.sign({ id: user._id }, config.JWT_SECRET, {
+    expiresIn: "7d",
   });
+
+  const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
+
+  const session = await Session.create({
+    user: user._id,
+    refreshTokenHash,
+    ip: req.ip,
+    userAgent: req.headers["user agent"],
+  });
+
+  const accessToken = jwt.sign(
+    { id: user._id, session: session._id },
+    config.JWT_SECRET,
+    {
+      expiresIn: "15m",
+    },
+  );
 
   res
     .status(201)
+    .cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "strict",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    })
     .json(
-      new ApiResponse(201, "User registered successfully", { user, token }),
+      new ApiResponse(201, "User registered successfully", {
+        user,
+        accessToken,
+      }),
     );
 });
 
@@ -50,4 +77,69 @@ const getMe = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, user, "User fetected successfully!"));
 });
 
-export { registerUser, getMe };
+const refreshToken = asyncHandler(async (req, res) => {
+  const refreshToken = req.cookies.refreshToken;
+
+  if (!refreshToken) {
+    throw new ApiError(401, "Refresh token not found");
+  }
+
+  const decoded = jwt.verify(refreshToken, config.JWT_SECRET);
+
+  const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
+
+  const session = await Session.findOne({ refreshTokenHash, revoked: false });
+  if (!session) {
+    throw new ApiError(401, "Invalid refresh token");
+  }
+
+  const user = await User.findById(decoded.id);
+
+  const newAccessToken = jwt.sign({ id: user._id }, config.JWT_SECRET, {
+    expiresIn: "15m",
+  });
+
+  const newRefreshToken = jwt.sign({ id: user._id }, config.JWT_SECRET, {
+    expiresIn: "7d",
+  });
+
+  session.refreshTokenHash = await bcrypt.hash(newRefreshToken, 10);
+  await session.save();
+
+  res
+    .cookie("refreshToken", newRefreshToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "strict",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    })
+    .json(
+      new ApiResponse(200, "Token refreshed successfully", {
+        accessToken: newAccessToken,
+      }),
+    );
+});
+
+const logout = asyncHandler(async (req, res) => {
+  const refreshToken = req.cookies.refreshToken;
+
+  if (!refreshToken) {
+    throw new ApiError(401, "Refresh token not found");
+  }
+
+  const decoded = jwt.verify(refreshToken, config.JWT_SECRET);
+
+  const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
+
+  await Session.findOneAndUpdate(
+    { refreshTokenHash, revoked: false },
+    { revoked: true },
+  );
+
+  res
+    .clearCookie("refreshToken")
+    .status(200)
+    .json(new ApiResponse(200, "Logged out successfully"));
+});
+
+export { registerUser, getMe, refreshToken, logout };
