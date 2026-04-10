@@ -6,6 +6,9 @@
 * nodemon
 * dotenv
 * morgan
+* cyrpto
+* jsonwebtoken
+
 
 
 ## Development Notes
