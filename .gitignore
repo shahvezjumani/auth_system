@@ -16,8 +16,6 @@ pids
 *.pid.lock
 
 # Environment variables
-.env
-.env.*
 !.env.example
 
 # Build output
@@ -73,3 +71,6 @@ temp/
 
 # Secrets
 secrets.json
+config.bat
+temp_auto_push.bat
+temp_interactive_push.bat

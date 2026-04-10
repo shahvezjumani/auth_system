@@ -142,4 +142,80 @@ const logout = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, "Logged out successfully"));
 });
 
-export { registerUser, getMe, refreshToken, logout };
+const logoutAll = asyncHandler(async (req, res) => {
+  const refreshToken = req.cookies.refreshToken;
+
+  if (!refreshToken) {
+    throw new ApiError(401, "Refresh token not found");
+  }
+
+  const decoded = jwt.verify(refreshToken, config.JWT_SECRET);
+
+  await Session.updateMany(
+    { user: decoded.id, revoked: false },
+    { revoked: true },
+  );
+
+  res
+    .clearCookie("refreshToken")
+    .status(200)
+    .json(new ApiResponse(200, "Logged out from all devices successfully"));
+});
+
+const login = asyncHandler(async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    throw new ApiError(400, "Email and password are required");
+  }
+
+  const user = await User.findOne({ email }).select("+password");
+
+  if (!user) {
+    throw new ApiError(401, "Invalid credentials");
+  }
+
+  const isPasswordValid = await bcrypt.compare(password, user.password);
+
+  if (!isPasswordValid) {
+    throw new ApiError(401, "Invalid credentials");
+  }
+
+  const refreshToken = jwt.sign({ id: user._id }, config.JWT_SECRET, {
+    expiresIn: "7d",
+  });
+
+  const refreshTokenHash = await bcrypt.hash(refreshToken, 10);
+
+  const session = await Session.create({
+    user: user._id,
+    refreshTokenHash,
+    ip: req.ip,
+    userAgent: req.headers["user-agent"],
+  });
+
+  const accessToken = jwt.sign(
+    { id: user._id, session: session._id },
+    config.JWT_SECRET,
+    {
+      expiresIn: "15m",
+    },
+  );
+
+  res
+    .status(200)
+    .cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "strict",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    })
+    .json(
+      new ApiResponse(200, "User logged in successfully", {
+        user,
+        accessToken,
+      }),
+    );
+});
+
+export { registerUser, getMe, refreshToken, logout, logoutAll, login };
